@@ -1,0 +1,445 @@
+# Ultimate Code Review — GitHub Action Workflow
+# https://github.com/[owner]/ultimate-code-review
+#
+# This workflow runs the UCR skill as part of CI/CD.
+# It supports PR-triggered diff reviews, manual full-repo reviews,
+# and optional push/schedule triggers.
+
+name: Ultimate Code Review
+
+# ---------------------------------------------------------------------------
+# Triggers
+# ---------------------------------------------------------------------------
+on:
+  # Automatically review pull requests (diff-scope by default)
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+  # Manual trigger with configurable options
+  workflow_dispatch:
+    inputs:
+      scope:
+        description: "Review scope"
+        required: false
+        default: "repo"
+        type: choice
+        options:
+          - repo
+          - diff
+          - commit
+          - tree
+      strictness:
+        description: "Strictness level"
+        required: false
+        default: "production"
+        type: choice
+        options:
+          - mvp
+          - production
+          - public
+      engine:
+        description: "AI engine to use"
+        required: false
+        default: "claude"
+        type: choice
+        options:
+          - claude
+          - codex
+          - both
+      blocking:
+        description: "Block PR on critical findings"
+        required: false
+        default: false
+        type: boolean
+
+  # Opt-in: uncomment to run on push to main/master
+  # push:
+  #   branches: [main, master]
+
+  # Opt-in: uncomment for scheduled reviews (e.g., nightly)
+  # schedule:
+  #   - cron: '0 6 * * 1'  # Every Monday at 6:00 UTC
+
+# ---------------------------------------------------------------------------
+# Permissions
+# ---------------------------------------------------------------------------
+permissions:
+  contents: read
+  pull-requests: write
+  checks: write
+
+# ---------------------------------------------------------------------------
+# Concurrency — avoid duplicate reviews on rapid pushes
+# ---------------------------------------------------------------------------
+concurrency:
+  group: ucr-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+# ---------------------------------------------------------------------------
+# Jobs
+# ---------------------------------------------------------------------------
+jobs:
+  review:
+    name: Code Review
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      # Resolve scope: workflow_dispatch input > PR default > fallback
+      UCR_SCOPE: ${{ github.event.inputs.scope || (github.event_name == 'pull_request' && 'diff') || 'repo' }}
+      UCR_STRICTNESS: ${{ github.event.inputs.strictness || 'production' }}
+      UCR_ENGINE: ${{ github.event.inputs.engine || 'claude' }}
+      UCR_BLOCKING: ${{ github.event.inputs.blocking || 'false' }}
+
+    steps:
+      # ------------------------------------------------------------------
+      # 1. Checkout code
+      # ------------------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Fetch full history for diff-scope reviews
+          fetch-depth: 0
+
+      # ------------------------------------------------------------------
+      # 2. Set up review environment
+      # ------------------------------------------------------------------
+      - name: Set up Python (for audit scripts)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up Node.js (for claude-code CLI)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install review dependencies
+        run: |
+          # Install audit script dependencies
+          pip install pip-audit safety 2>/dev/null || true
+
+          # Install gitleaks for secrets scanning
+          GITLEAKS_VERSION="8.18.1"
+          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | tar xz -C /usr/local/bin gitleaks 2>/dev/null || echo "::warning::gitleaks install failed; falling back to pattern scanning"
+          chmod +x /usr/local/bin/gitleaks 2>/dev/null || true
+
+          # Install Claude Code CLI (if using claude engine)
+          if [[ "$UCR_ENGINE" == "claude" || "$UCR_ENGINE" == "both" ]]; then
+            npm install -g @anthropic-ai/claude-code 2>/dev/null || echo "::warning::claude-code CLI install failed"
+          fi
+
+          # Install Codex CLI (if using codex engine)
+          if [[ "$UCR_ENGINE" == "codex" || "$UCR_ENGINE" == "both" ]]; then
+            npm install -g @openai/codex 2>/dev/null || echo "::warning::codex CLI install failed"
+          fi
+
+      - name: Make UCR scripts executable
+        run: |
+          chmod +x scripts/*.sh 2>/dev/null || true
+
+      # ------------------------------------------------------------------
+      # 3. Run pre-review audit scripts
+      # ------------------------------------------------------------------
+      - name: Run dependency audit
+        id: dep_audit
+        continue-on-error: true
+        run: |
+          mkdir -p .ucr/reports
+          if [[ -f "scripts/dep-audit.sh" ]]; then
+            bash scripts/dep-audit.sh . > .ucr/reports/dep-audit.json 2>&1
+            echo "dep_audit_status=success" >> "$GITHUB_OUTPUT"
+          else
+            echo '{"tool":"ucr-dep-audit","error":"script not found"}' > .ucr/reports/dep-audit.json
+            echo "dep_audit_status=skipped" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run license check
+        id: license_check
+        continue-on-error: true
+        run: |
+          if [[ -f "scripts/license-check.sh" ]]; then
+            bash scripts/license-check.sh . > .ucr/reports/license-check.json 2>&1
+            echo "license_check_status=success" >> "$GITHUB_OUTPUT"
+          else
+            echo '{"tool":"ucr-license-check","error":"script not found"}' > .ucr/reports/license-check.json
+            echo "license_check_status=skipped" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run secrets scan
+        id: secrets_scan
+        continue-on-error: true
+        run: |
+          if [[ -f "scripts/secrets-scan.sh" ]]; then
+            bash scripts/secrets-scan.sh . > .ucr/reports/secrets-scan.json 2>&1
+            echo "secrets_scan_status=success" >> "$GITHUB_OUTPUT"
+          else
+            echo '{"tool":"ucr-secrets-scan","error":"script not found"}' > .ucr/reports/secrets-scan.json
+            echo "secrets_scan_status=skipped" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ------------------------------------------------------------------
+      # 4. Run the UCR skill
+      # ------------------------------------------------------------------
+      - name: Determine diff base
+        id: diff_base
+        if: env.UCR_SCOPE == 'diff'
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            echo "base=${{ github.event.pull_request.base.sha }}" >> "$GITHUB_OUTPUT"
+            echo "head=${{ github.event.pull_request.head.sha }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "base=$(git rev-parse HEAD~1)" >> "$GITHUB_OUTPUT"
+            echo "head=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build review prompt
+        id: prompt
+        run: |
+          PROMPT="Run the Ultimate Code Review skill with scope=$UCR_SCOPE and strictness=$UCR_STRICTNESS."
+
+          if [[ "$UCR_SCOPE" == "diff" && -n "${{ steps.diff_base.outputs.base }}" ]]; then
+            PROMPT="$PROMPT Review the diff between ${{ steps.diff_base.outputs.base }} and ${{ steps.diff_base.outputs.head }}."
+          fi
+
+          PROMPT="$PROMPT Include results from .ucr/reports/ audit files. Output the full review report in JSON format to .ucr/reports/review-report.json"
+
+          echo "review_prompt=$PROMPT" >> "$GITHUB_OUTPUT"
+
+      - name: Run review (Claude)
+        if: env.UCR_ENGINE == 'claude' || env.UCR_ENGINE == 'both'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if ! command -v claude &>/dev/null; then
+            echo "::error::claude-code CLI not found. Install with: npm install -g @anthropic-ai/claude-code"
+            exit 1
+          fi
+
+          claude --print "${{ steps.prompt.outputs.review_prompt }}" \
+            --output-format json \
+            > .ucr/reports/review-claude.json 2>&1 || true
+
+      - name: Run review (Codex)
+        if: env.UCR_ENGINE == 'codex' || env.UCR_ENGINE == 'both'
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          if ! command -v codex &>/dev/null; then
+            echo "::error::codex CLI not found. Install with: npm install -g @openai/codex"
+            exit 1
+          fi
+
+          codex --quiet "${{ steps.prompt.outputs.review_prompt }}" \
+            > .ucr/reports/review-codex.json 2>&1 || true
+
+      # ------------------------------------------------------------------
+      # 5. Generate summary
+      # ------------------------------------------------------------------
+      - name: Generate review summary
+        id: summary
+        run: |
+          python3 - <<'PYEOF'
+          import json, os, glob
+
+          reports_dir = ".ucr/reports"
+          summary_lines = ["## Ultimate Code Review Summary\n"]
+
+          # Load and summarize each report
+          for report_file in sorted(glob.glob(f"{reports_dir}/*.json")):
+              name = os.path.basename(report_file).replace(".json", "").replace("-", " ").title()
+              try:
+                  with open(report_file) as f:
+                      data = json.load(f)
+
+                  if "error" in data:
+                      summary_lines.append(f"### {name}\n- Status: Error ({data['error']})\n")
+                      continue
+
+                  # Dep audit summary
+                  if "managers_audited" in data:
+                      total_vulns = sum(r.get("total_vulnerabilities", 0) for r in data.get("results", []))
+                      summary_lines.append(f"### {name}")
+                      summary_lines.append(f"- Managers detected: {data.get('managers_detected', 0)}")
+                      summary_lines.append(f"- Managers audited: {data.get('managers_audited', 0)}")
+                      summary_lines.append(f"- Total vulnerabilities: {total_vulns}\n")
+
+                  # License check summary
+                  elif "total_flags" in data:
+                      summary_lines.append(f"### {name}")
+                      summary_lines.append(f"- Project license: {data.get('project_license', 'unknown')}")
+                      summary_lines.append(f"- License flags: {data.get('total_flags', 0)}\n")
+
+                  # Secrets scan summary
+                  elif "total_findings" in data:
+                      summary_lines.append(f"### {name}")
+                      summary_lines.append(f"- Scanner: {data.get('scanner', 'unknown')}")
+                      summary_lines.append(f"- Findings: {data.get('total_findings', 0)}")
+                      summary_lines.append(f"- Note: No secret values are exposed in reports\n")
+
+                  # Generic review report
+                  else:
+                      findings_count = len(data.get("findings", []))
+                      summary_lines.append(f"### {name}")
+                      summary_lines.append(f"- Findings: {findings_count}\n")
+
+              except (json.JSONDecodeError, IOError):
+                  summary_lines.append(f"### {name}\n- Status: Could not parse report\n")
+
+          summary = "\n".join(summary_lines)
+
+          # Write summary for later steps
+          with open(".ucr/reports/summary.md", "w") as f:
+              f.write(summary)
+
+          # Set output (truncate for GitHub output limits)
+          summary_truncated = summary[:60000]
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write("summary<<EOFSUM\n")
+              f.write(summary_truncated)
+              f.write("\nEOFSUM\n")
+
+          print(summary)
+          PYEOF
+
+      # ------------------------------------------------------------------
+      # 6. Upload report as artifact
+      # ------------------------------------------------------------------
+      - name: Upload review reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ucr-report-${{ github.run_id }}
+          path: .ucr/reports/
+          retention-days: 30
+
+      # ------------------------------------------------------------------
+      # 7. Post PR comment with summary (if PR trigger)
+      # ------------------------------------------------------------------
+      - name: Post PR comment
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let summary = '';
+            try {
+              summary = fs.readFileSync('.ucr/reports/summary.md', 'utf8');
+            } catch {
+              summary = '## Ultimate Code Review\n\nReview completed but summary generation failed. Check the workflow artifacts for full reports.';
+            }
+
+            // Find and update existing comment, or create new one
+            const marker = '<!-- ucr-review-comment -->';
+            const body = `${marker}\n${summary}\n\n---\n*Generated by [Ultimate Code Review](https://github.com/[owner]/ultimate-code-review) | Run: ${context.runId}*`;
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const existing = comments.find(c => c.body.includes(marker));
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+
+      # ------------------------------------------------------------------
+      # 8. Create check run with summary
+      # ------------------------------------------------------------------
+      - name: Create check run
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let summary = 'Review completed.';
+            try {
+              summary = fs.readFileSync('.ucr/reports/summary.md', 'utf8');
+            } catch {}
+
+            // Determine conclusion based on blocking mode and findings
+            let conclusion = 'success';
+            const blocking = '${{ env.UCR_BLOCKING }}' === 'true';
+
+            if (blocking) {
+              try {
+                // Check for critical findings in review reports
+                const files = fs.readdirSync('.ucr/reports/').filter(f => f.endsWith('.json'));
+                for (const file of files) {
+                  const data = JSON.parse(fs.readFileSync(`.ucr/reports/${file}`, 'utf8'));
+                  const findings = data.findings || [];
+                  const hasCritical = findings.some(f =>
+                    f.severity === 'critical' || f.severity === 'blocker'
+                  );
+                  if (hasCritical) {
+                    conclusion = 'failure';
+                    break;
+                  }
+                }
+              } catch {}
+            }
+
+            await github.rest.checks.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              name: 'Ultimate Code Review',
+              head_sha: context.sha,
+              status: 'completed',
+              conclusion,
+              output: {
+                title: `Code Review (${conclusion})`,
+                summary: summary.substring(0, 65535),
+              },
+            });
+
+      # ------------------------------------------------------------------
+      # 9. Commit report to history (opt-in)
+      # ------------------------------------------------------------------
+      - name: Commit report to history
+        if: always()
+        run: |
+          # Only commit if .ucr/history/ directory exists (opt-in)
+          if [[ -d ".ucr/history" ]]; then
+            REPORT_NAME="review-$(date +%Y%m%d-%H%M%S)-${GITHUB_SHA:0:8}.json"
+
+            # Merge all JSON reports into one
+            python3 -c "
+          import json, glob, os
+          merged = {'reports': {}}
+          for f in sorted(glob.glob('.ucr/reports/*.json')):
+              name = os.path.basename(f).replace('.json', '')
+              try:
+                  with open(f) as fh:
+                      merged['reports'][name] = json.load(fh)
+              except: pass
+          merged['run_id'] = '${{ github.run_id }}'
+          merged['sha'] = '${{ github.sha }}'
+          merged['ref'] = '${{ github.ref }}'
+          with open('.ucr/history/$REPORT_NAME', 'w') as f:
+              json.dump(merged, f, indent=2)
+          " || true
+
+            # Attempt to commit (will fail silently if no write access)
+            git config user.name "UCR Bot"
+            git config user.email "ucr-bot@users.noreply.github.com"
+            git add .ucr/history/ 2>/dev/null || true
+            git commit -m "chore(ucr): add review report $REPORT_NAME" 2>/dev/null || true
+            git push 2>/dev/null || echo "::notice::Could not push review history (this is normal for PRs from forks)"
+          else
+            echo "::notice::No .ucr/history/ directory found. Create it to enable report history."
+          fi

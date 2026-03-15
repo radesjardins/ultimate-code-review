@@ -1,0 +1,238 @@
+# =============================================================================
+# Ultimate Code Review Configuration (.ucrconfig.yml)
+# =============================================================================
+#
+# Copy this file to your repository root as .ucrconfig.yml
+#
+# All settings are optional. When omitted, sensible defaults are used.
+# Commented-out entries show the default values or example configurations.
+#
+# This file is read at the start of every UCR run. Changes take effect
+# immediately on the next review.
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# Exclude Paths
+# -----------------------------------------------------------------------------
+# Glob patterns for files and directories to skip during review.
+# These paths will not be analyzed and will not generate findings.
+# They are disclosed in the report's "Exclusions" section for transparency.
+#
+# Common exclusions: vendored code, generated files, build output, minified
+# assets, and legacy code that is being replaced.
+#
+# Use forward slashes for path separators, even on Windows.
+
+exclude_paths:
+  # - "vendor/**"              # Third-party vendored dependencies
+  # - "node_modules/**"        # npm packages (typically excluded by default)
+  # - "generated/**"           # Auto-generated code (protobuf, GraphQL, etc.)
+  # - "*.min.js"               # Minified JavaScript bundles
+  # - "*.min.css"              # Minified CSS bundles
+  # - "dist/**"                # Build output directory
+  # - "coverage/**"            # Test coverage reports
+  # - "legacy/**"              # Legacy code scheduled for removal
+  # - "**/*.snap"              # Jest snapshots
+  # - "migrations/00*.sql"     # Old migrations that are already deployed
+
+
+# -----------------------------------------------------------------------------
+# Accepted Risks
+# -----------------------------------------------------------------------------
+# Findings that are acknowledged and intentional. These represent conscious
+# trade-offs that the team has evaluated and accepted.
+#
+# Accepted risks WILL still appear in the report — they are listed in the
+# "Accepted Risks" section for auditability. However, they will NOT affect
+# the release verdict or blocker count.
+#
+# IMPORTANT: Every accepted risk must have an expiry date. When the expiry
+# date passes, the risk will be flagged in the report as "expired" and will
+# once again count toward the verdict. This ensures accepted risks are
+# periodically re-evaluated rather than forgotten.
+#
+# Fields:
+#   id            (required) Unique identifier for this risk. Use kebab-case.
+#   description   (required) What the risk is — the specific code behavior
+#                            that would normally be flagged.
+#   justification (required) Why this risk is acceptable — what mitigations
+#                            exist or why the trade-off is worth it.
+#   owner         (required) Team or person responsible for this risk.
+#   reviewed_date (required) Date the risk was last reviewed (ISO 8601).
+#   expires       (required) Date the risk must be re-evaluated (ISO 8601).
+#                            Reports generated after this date will flag
+#                            the risk as expired.
+#   finding_match (optional) Pattern to match against finding titles or
+#                            categories. If omitted, the risk must be
+#                            manually linked to findings during review.
+
+accepted_risks:
+  # - id: "eval-plugin-system"
+  #   description: "We use eval() to execute plugin code in the plugin runtime"
+  #   justification: "Plugin input is validated against an allowlist schema and executed in a sandboxed V8 isolate with no filesystem or network access"
+  #   owner: "security-team"
+  #   reviewed_date: "2026-01-15"
+  #   expires: "2026-07-15"
+  #   finding_match: "eval"
+
+  # - id: "http-internal-api"
+  #   description: "Internal service-to-service API uses HTTP without TLS"
+  #   justification: "Services communicate over a private VPC network with no external ingress. TLS termination happens at the load balancer for external traffic."
+  #   owner: "platform-team"
+  #   reviewed_date: "2026-02-01"
+  #   expires: "2026-08-01"
+
+  # - id: "known-cve-libfoo"
+  #   description: "libfoo v2.3.1 has CVE-2025-12345 (medium severity)"
+  #   justification: "The vulnerable code path (XML parsing) is not used in our integration. Upgrade blocked until libfoo v3.0 is released with breaking API changes."
+  #   owner: "backend-team"
+  #   reviewed_date: "2026-03-01"
+  #   expires: "2026-06-01"
+
+
+# -----------------------------------------------------------------------------
+# Custom Rules
+# -----------------------------------------------------------------------------
+# Project-specific review rules that supplement the built-in review logic.
+# Use these to enforce team conventions or catch project-specific anti-patterns.
+#
+# Fields:
+#   name      (required) Human-readable rule name.
+#   pattern   (required) Glob pattern for files this rule applies to.
+#   check     (required) What to check for. Built-in checks:
+#                        - "no-raw-sql"      Flag raw SQL string construction
+#                        - "no-console-log"   Flag console.log in production code
+#                        - "no-any-type"      Flag TypeScript 'any' usage
+#                        - "no-hardcoded-url" Flag hardcoded URLs/IPs
+#                        - "no-todo"          Flag TODO/FIXME/HACK comments
+#                        - "requires-tests"   Flag files without companion tests
+#                        - "max-complexity"    Flag functions over complexity threshold
+#                        Custom string values are passed to the reviewer as
+#                        natural-language instructions.
+#   severity  (required) Severity level for violations: critical, major,
+#                        moderate, or minor.
+#   message   (optional) Custom message to include in the finding.
+
+custom_rules:
+  # - name: "No direct database queries in controllers"
+  #   pattern: "src/controllers/**"
+  #   check: "no-raw-sql"
+  #   severity: "major"
+  #   message: "Database queries must go through the repository layer."
+
+  # - name: "No console.log in production code"
+  #   pattern: "src/**"
+  #   check: "no-console-log"
+  #   severity: "minor"
+
+  # - name: "API endpoints must have integration tests"
+  #   pattern: "src/routes/**"
+  #   check: "requires-tests"
+  #   severity: "major"
+  #   message: "Every route file must have a corresponding .test file."
+
+  # - name: "No hardcoded API URLs"
+  #   pattern: "src/**"
+  #   check: "no-hardcoded-url"
+  #   severity: "moderate"
+  #   message: "API URLs must come from environment configuration."
+
+  # - name: "No TypeScript any"
+  #   pattern: "src/**/*.ts"
+  #   check: "no-any-type"
+  #   severity: "moderate"
+
+
+# -----------------------------------------------------------------------------
+# Strictness Overrides
+# -----------------------------------------------------------------------------
+# Override the default strictness level for specific review categories.
+# This lets you set higher standards for critical areas (e.g., always review
+# security at public-release level) or relax standards for areas that are
+# less important to your project (e.g., MVP-level docs requirements).
+#
+# Categories: security, architecture, performance, accessibility, ux,
+#             testing, reliability, documentation, dependency, configuration
+#
+# Values: mvp, production, public
+
+# strictness_overrides:
+#   security: "public"          # Always hold security to the highest standard
+#   documentation: "mvp"        # Relaxed documentation requirements
+#   accessibility: "public"     # Full WCAG compliance required
+#   testing: "production"       # Standard test coverage expectations
+
+
+# -----------------------------------------------------------------------------
+# Review Focus
+# -----------------------------------------------------------------------------
+# Optional list of categories to emphasize during review. The reviewer will
+# spend extra attention on these areas and may apply stricter evaluation.
+# Does NOT exclude other categories — it adjusts emphasis.
+#
+# Useful when you know your project's risk areas or when preparing for
+# a specific type of audit (security review, accessibility audit, etc.).
+
+# review_focus:
+#   - "security"
+#   - "performance"
+#   - "accessibility"
+
+
+# -----------------------------------------------------------------------------
+# Defaults
+# -----------------------------------------------------------------------------
+# Default settings for review runs when not specified via command arguments.
+# Command-line arguments always take precedence over these defaults.
+#
+# scope:      What to review. Options:
+#             - "repo"    Full repository (default)
+#             - "diff"    Only changed files (requires git)
+#             - "commit"  Single commit (requires commit hash argument)
+#             - "tree"    Directory subtree (requires path argument)
+#
+# strictness: How strict the review should be. Options:
+#             - "mvp"        Minimum viable — only critical and major issues
+#             - "production" Standard — critical, major, and moderate (default)
+#             - "public"     Public release — all severity levels matter
+#
+# engine:     Which AI engine to use. Options:
+#             - "claude"  Claude only (default)
+#             - "codex"   Codex only
+#             - "both"    Both engines with result merging
+
+# defaults:
+#   scope: "repo"
+#   strictness: "production"
+#   engine: "claude"
+
+
+# -----------------------------------------------------------------------------
+# History
+# -----------------------------------------------------------------------------
+# Configuration for report history tracking and comparison.
+#
+# directory:     Where to store report history files. Relative to repo root.
+# max_reports:   Maximum number of historical reports to retain.
+# auto_compare:  Automatically compare against the most recent previous report.
+
+# history:
+#   directory: ".ucr-reports"
+#   max_reports: 20
+#   auto_compare: true
+
+
+# -----------------------------------------------------------------------------
+# Output
+# -----------------------------------------------------------------------------
+# Control what output files are generated.
+#
+# markdown:  Generate the human-readable Markdown report (default: true).
+# json:      Generate the machine-readable JSON companion file (default: true).
+# inline:    Print findings inline in the terminal during review (default: true).
+
+# output:
+#   markdown: true
+#   json: true
+#   inline: true
