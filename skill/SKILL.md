@@ -1,32 +1,7 @@
 ---
 name: ultimate-code-review
-description: >
-  Professional-grade code review optimized for AI-generated code, security, architecture,
-  and release readiness. Performs bug finding, architecture review, and release gate
-  evaluation with severity-ranked findings and code evidence.
-
-  <example>
-  Context: User completed building an app and wants pre-release review
-  user: "review this project before release"
-  assistant: "Starting ultimate code review. Let me gather some details first."
-  <commentary>Triggers full review workflow</commentary>
-  </example>
-
-  <example>
-  Context: User wants a quick security check on recent changes
-  user: "/ultimate-code-review diff --strictness production"
-  assistant: "Running production-strictness review on current diff..."
-  <commentary>Explicit invocation with scope and strictness</commentary>
-  </example>
-
-  <example>
-  Context: User wants dual-engine adversarial review
-  user: "/ultimate-code-review repo --engine both --strictness public"
-  assistant: "Starting full-repo review with sequential adversarial (Claude primary, Codex adversarial)..."
-  <commentary>Dual-engine mode with public release strictness</commentary>
-  </example>
-
-argument-hint: "[repo|diff|commit|tree] [--strictness mvp|production|public] [--engine claude|codex|both] [--local-only] [--fix blockers|critical-major|<ids>]"
+description: "Professional-grade code review for AI-generated code, security, architecture, and release readiness. Three review roles: bug finder, architecture reviewer, and release gate. Covers 10 categories including AI slop detection, security (OWASP), UX/accessibility, and performance. Supports whole-repo, diff, commit, or working-tree scope. Produces severity-ranked findings with code evidence, release verdicts, and optional fix application. Includes adversarial review pass, report history, local-only mode, and 8 project-type modules (web app, API, Chrome extension, CLI, library, Electron, mobile, SaaS)."
+argument-hint: "[repo|diff|commit|tree] [--strictness mvp|production|public] [--engine claude|codex|both] [--local-only] [--fix blockers|critical-major|"
 allowed-tools:
   - Read
   - Write
