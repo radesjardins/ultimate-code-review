@@ -1,7 +1,7 @@
 ---
 name: ultimate-code-review
 description: "Professional-grade code review for AI-generated code, security, architecture, and release readiness. Three review roles: bug finder, architecture reviewer, and release gate. Covers 10 categories including AI slop detection, security (OWASP), UX/accessibility, and performance. Supports whole-repo, diff, commit, or working-tree scope. Produces severity-ranked findings with code evidence, release verdicts, and optional fix application. Includes adversarial review pass, report history, local-only mode, and 8 project-type modules (web app, API, Chrome extension, CLI, library, Electron, mobile, SaaS)."
-argument-hint: "[repo|diff|commit|tree] [--strictness mvp|production|public] [--engine claude|codex|both] [--local-only] [--fix blockers|critical-major|"
+argument-hint: "[repo|diff|commit|tree] [--strictness mvp|production|public] [--engine claude|codex|both] [--local-only] [--fix blockers|critical-major|IDs]"
 allowed-tools:
   - Read
   - Write
@@ -62,7 +62,7 @@ Arguments: $ARGUMENTS
 - `both` — Claude does primary review (Phase 3), Codex does adversarial pass (Phase 4)
 
 **Connectivity:** --local-only (default: internet-enabled)
-**Fix mode:** --fix blockers | --fix critical-major | --fix <id1,id2,...>
+**Fix mode:** --fix blockers | --fix critical-major | --fix id1,id2,...
 
 **Project config:** .ucrconfig.yml (if present in repo root)
 **History:** .ucr/history/ (previous review reports)
